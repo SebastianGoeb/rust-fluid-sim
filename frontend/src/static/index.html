@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+
+<div id="rps_counter"></div>
+<canvas id="game" width="500" height="500" style="border: 1px solid #333"></canvas>
+
+<script>
+    const buckets = [1, 3, 6, 10, 33, 66, 100, 333, 666, 1000, Infinity];
+    const buckets_rev = [...buckets].reverse();
+    const benchmarks = {
+        draw: {
+            last_eval: new Date().getTime(),
+            frequencies: Object.fromEntries(buckets.map(b => [b, 0])) // {1: 0, 3: 0, ... Infinity: 0}
+        }
+    };
+
+
+    const canvas = document.getElementById("game");
+    const context = canvas.getContext("2d");
+    const game_to_px = 500 / 100; // 500px = 100 game units
+
+    let state = {entities: []};
+
+    function benchmark(bench, start_millis, now_millis) {
+        const dur_millis = now_millis - start_millis;
+        const bucket = buckets.find(b => dur_millis < Number(b));
+        bench.frequencies[bucket]++
+
+        if (now_millis > bench.last_eval + 3000) {
+            // calculate perenctiles
+            const cumul_frequencies = {};
+            let running_cumul_freq = 0;
+            Object.keys(bench.frequencies).map(k => Number(k)).sort((a, b) => a - b).forEach(bucket => {
+                running_cumul_freq += bench.frequencies[bucket];
+                cumul_frequencies[bucket] = running_cumul_freq;
+            });
+            const total_freq = running_cumul_freq;
+            const percentiles = Object.fromEntries(Object.entries(cumul_frequencies).map(([key, value]) => [key, value / total_freq]));
+
+            let p50 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.5)[0];
+            let p90 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.9)[0];
+            let p95 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.95)[0];
+
+            // report
+            console.log(`p50: ${p50}, p90: ${p90}, p95: ${p95}`);
+            // console.log(bench.frequencies, cumul_frequencies, percentiles);
+
+            // reset
+            Object.keys(bench.frequencies).forEach(k => bench.frequencies[k] = 0);
+            bench.last_eval = now_millis;
+        }
+    }
+
+    function gameLoop(timestamp) {
+        const start = new Date().getTime();
+        draw()
+        benchmark(benchmarks.draw, start, new Date().getTime());
+
+        window.requestAnimationFrame(gameLoop);
+    }
+
+    function draw() {
+        context.clearRect(0, 0, 500, 500);
+        const iters = 1000;
+        for (let i = 0; i < iters; i++) {
+            for (let {x, y} of state.entities) {
+                draw_entity(x, y);
+            }
+        }
+    }
+
+    function draw_entity(x, y) {
+        context.fillRect(x * game_to_px, y * game_to_px, 3 * game_to_px, 3 * game_to_px);
+    }
+
+    async function stateLoop() {
+        const target_fps_ms = 500;
+        let last_fps_log = new Date().getTime();
+        let last_fps_n = 0;
+
+        const target_fetch_hz = 60;
+        const target_fetch_ms = 1000 / target_fetch_hz;
+        let fetch_start = new Date().getTime();
+
+        // noinspection InfiniteLoopJS
+        for (let n = 0; ; n++) {
+            // get state update
+            const res = await fetch('/api/tick');
+            state = await res.json();
+
+            // calculate constant-rate sleep
+            const fetch_end = new Date().getTime();
+            const fetch_dur = fetch_end - fetch_start;
+
+            // log fps
+            if (fetch_end - last_fps_log > target_fps_ms) {
+                const fps = 1000 * (n - last_fps_n) / (fetch_end - last_fps_log);
+                document.getElementById("rps_counter").textContent = `${fps.toFixed(1)} rps`;
+                // console.log(`${fps} rps`);
+                last_fps_log = last_fps_log + target_fps_ms;
+                last_fps_n = n;
+            }
+
+            // perform constant-rate sleep
+            if (fetch_dur < target_fetch_ms) {
+                await new Promise(r => setTimeout(r, target_fetch_ms - fetch_dur));
+            }
+            fetch_start = fetch_start + target_fetch_ms;
+        }
+    }
+
+    window.onload = () => {
+        stateLoop();
+        window.requestAnimationFrame(gameLoop);
+    }
+</script>
+</body>
+</html>
