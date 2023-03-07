@@ -24,7 +24,10 @@
     const context = canvas.getContext("2d");
     const game_to_px = 500 / 100; // 500px = 100 game units
 
-    let state = {entities: []};
+    let state = {
+        time_s: 0,
+        entities: [],
+    };
 
     function benchmark(bench, start_millis, now_millis) {
         const dur_millis = now_millis - start_millis;
@@ -66,16 +69,28 @@
 
     function draw() {
         context.clearRect(0, 0, 500, 500);
-        const iters = 1000;
-        for (let i = 0; i < iters; i++) {
-            for (let {x, y} of state.entities) {
-                draw_entity(x, y);
-            }
+        for (let entity of state.entities) {
+            draw_entity(entity);
         }
     }
 
-    function draw_entity(x, y) {
-        context.fillRect(x * game_to_px, y * game_to_px, 3 * game_to_px, 3 * game_to_px);
+    function draw_entity(entity) {
+        const {mass_kg, position_m, velocity_ms} = entity;
+        let radius_m = Math.pow(mass_kg, 1/3) / 1e4 * game_to_px;
+        if (radius_m < 0.5) {
+            radius_m = 0.5;
+        }
+        context.beginPath();
+        context.arc(position_m.x * game_to_px, position_m.y * game_to_px, radius_m * game_to_px, 0, 2 * Math.PI);
+        context.fill();
+
+        // debug velocity indicators
+        // context.beginPath();
+        // context.moveTo(position_m.x * game_to_px, position_m.y * game_to_px);
+        // context.lineTo(
+        //     position_m.x * game_to_px + 1e2 * velocity_ms.x * game_to_px,
+        //     position_m.y * game_to_px + 1e2 * velocity_ms.y * game_to_px);
+        // context.stroke();
     }
 
     async function stateLoop() {
@@ -83,14 +98,14 @@
         let last_fps_log = new Date().getTime();
         let last_fps_n = 0;
 
-        const target_fetch_hz = 60;
+        const target_fetch_hz = 20;
         const target_fetch_ms = 1000 / target_fetch_hz;
         let fetch_start = new Date().getTime();
 
         // noinspection InfiniteLoopJS
         for (let n = 0; ; n++) {
             // get state update
-            const res = await fetch('/api/tick');
+            const res = await fetch('/gravity/step_naive', {method: 'POST'});
             state = await res.json();
 
             // calculate constant-rate sleep
@@ -114,7 +129,42 @@
         }
     }
 
-    window.onload = () => {
+    async function initGravitySim() {
+        const res = await fetch('/gravity', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                step_s: 10.0,
+                time_s: 0.0,
+                entities: [
+                    {
+                        mass_kg: 3e10,
+                        position_m: {x: 50.0, y: 20.0},
+                        velocity_ms: {x: 0.05, y: 0.0},
+                    },
+                    {
+                        mass_kg: 1e10,
+                        position_m: {x: 50.0, y: 80.0},
+                        velocity_ms: {x: -0.1, y: 0.0},
+                    },
+                    {
+                        mass_kg: 1e6,
+                        position_m: {x: 0.0, y: 30.0},
+                        velocity_ms: {x: 0.0, y: -0.1},
+                    },
+                ]
+            })
+        });
+        if (!res.ok) {
+            throw new Error("gravity setup not ok");
+        }
+    }
+
+    window.onload = async () => {
+        await initGravitySim();
+        // noinspection ES6MissingAwait
         stateLoop();
         window.requestAnimationFrame(gameLoop);
     }

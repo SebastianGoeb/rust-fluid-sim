@@ -1,41 +1,43 @@
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use actix_web::{post, Responder, Result, web};
-use actix_web::web::{Data, Json};
-use serde::{Serialize, Serializer};
-use gravity_sim::{Entity, State, Vec2};
+use actix_web::web::Json;
+use actix_web::{post, web, Responder, Result};
+
+use gravity_sim::State;
+
+#[post("")]
+pub async fn setup(data: web::Data<GravityApp>, body: web::Json<State>) -> Result<impl Responder> {
+    let mut state = data.state.lock().unwrap();
+    *state = body.to_owned();
+    Ok(Json(state.clone()))
+}
 
 #[post("/step_naive")]
-async fn step_naive(data: web::Data<GravityApp>) -> Result<impl Responder> {
+pub async fn step_naive(data: web::Data<GravityApp>) -> Result<impl Responder> {
     let mut state = data.state.lock().unwrap();
     *state = gravity_sim::step_naive(&*state);
     Ok(Json(state.clone()))
 }
 
 pub struct GravityApp {
-    pub state: Mutex<State>
+    pub state: Mutex<State>,
 }
 
 pub fn new() -> GravityApp {
     GravityApp {
         state: Mutex::new(State {
-            time_s: 0,
-            entities: vec![
-                Entity {
-                    mass_kg: 1.0,
-                    position_m: Vec2 { x: 0.0, y: 0.0},
-                    velocity_ms: Vec2 { x: 0.0, y: 0.0}
-                }
-            ]
-        })
+            step_s: 10.0,
+            time_s: 0.0,
+            entities: vec![],
+        }),
     }
 }
 
-impl GravityApp {
-    pub fn config(&self, data: Data<GravityApp>, cfg: &mut web::ServiceConfig) {
-        cfg.service(web::scope("/gravity")
-            .app_data(&data.state)
-            .service(step_naive));
-    }
+pub fn config(data: web::Data<GravityApp>, cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/gravity")
+            .app_data(data)
+            .service(setup)
+            .service(step_naive),
+    );
 }
