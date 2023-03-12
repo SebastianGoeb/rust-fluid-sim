@@ -1,173 +1,226 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>Title</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #game {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #rps_counter {
+            position: absolute;
+            top: 1em;
+            left: 1em;
+        }
+    </style>
 </head>
+
 <body>
+    <canvas id="game" style="border: 1px solid #333"></canvas>
+    <div id="rps_counter"></div>
 
-<div id="rps_counter"></div>
-<canvas id="game" width="500" height="500" style="border: 1px solid #333"></canvas>
+    <script>
+        const canvas = document.getElementById("game");
+        const context = canvas.getContext("2d");
 
-<script>
-    const buckets = [1, 3, 6, 10, 33, 66, 100, 333, 666, 1000, Infinity];
-    const buckets_rev = [...buckets].reverse();
-    const benchmarks = {
-        draw: {
-            last_eval: new Date().getTime(),
-            frequencies: Object.fromEntries(buckets.map(b => [b, 0])) // {1: 0, 3: 0, ... Infinity: 0}
+        function resizeCanvasToWindow() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
         }
-    };
 
+        // keep canvas in-sync with window
+        resizeCanvasToWindow();
+        window.addEventListener('resize', event => resizeCanvasToWindow());
 
-    const canvas = document.getElementById("game");
-    const context = canvas.getContext("2d");
-    const game_to_px = 500 / 100; // 500px = 100 game units
+        // benchmarking stuff
+        const buckets = [1, 3, 6, 10, 33, 66, 100, 333, 666, 1000, Infinity];
+        const buckets_rev = [...buckets].reverse();
+        const benchmarks = {
+            draw: {
+                last_eval: new Date().getTime(),
+                frequencies: Object.fromEntries(buckets.map(b => [b, 0])) // {1: 0, 3: 0, ... Infinity: 0}
+            }
+        };
 
-    let state = {
-        time_s: 0,
-        entities: [],
-    };
+        function benchmark(bench, start_millis, now_millis) {
+            const dur_millis = now_millis - start_millis;
+            const bucket = buckets.find(b => dur_millis < Number(b));
+            bench.frequencies[bucket]++
 
-    function benchmark(bench, start_millis, now_millis) {
-        const dur_millis = now_millis - start_millis;
-        const bucket = buckets.find(b => dur_millis < Number(b));
-        bench.frequencies[bucket]++
+            if (now_millis > bench.last_eval + 3000) {
+                // calculate perenctiles
+                const cumul_frequencies = {};
+                let running_cumul_freq = 0;
+                Object.keys(bench.frequencies).map(k => Number(k)).sort((a, b) => a - b).forEach(bucket => {
+                    running_cumul_freq += bench.frequencies[bucket];
+                    cumul_frequencies[bucket] = running_cumul_freq;
+                });
+                const total_freq = running_cumul_freq;
+                const percentiles = Object.fromEntries(Object.entries(cumul_frequencies).map(([key, value]) => [key, value / total_freq]));
 
-        if (now_millis > bench.last_eval + 3000) {
-            // calculate perenctiles
-            const cumul_frequencies = {};
-            let running_cumul_freq = 0;
-            Object.keys(bench.frequencies).map(k => Number(k)).sort((a, b) => a - b).forEach(bucket => {
-                running_cumul_freq += bench.frequencies[bucket];
-                cumul_frequencies[bucket] = running_cumul_freq;
+                let p50 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.5)[0];
+                let p90 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.9)[0];
+                let p95 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.95)[0];
+
+                // report
+                console.log(`p50: ${p50}, p90: ${p90}, p95: ${p95}`);
+                // console.log(bench.frequencies, cumul_frequencies, percentiles);
+
+                // reset
+                Object.keys(bench.frequencies).forEach(k => bench.frequencies[k] = 0);
+                bench.last_eval = now_millis;
+            }
+        }
+
+        // game stuff
+        const camera_pos = { x: 0.0, y: 0.0 }; // game-space, not pixel/space
+        let camera_zoom_pixels_m = 0.2; // pixels/m
+
+        window.addEventListener('mousewheel', event => {
+            camera_zoom_pixels_m += event.wheelDelta / 100 * camera_zoom_pixels_m;
+        })
+
+        function transform_game_to_canvas(pos_m) {
+            const pos_m_relative_to_camera = {
+                x: pos_m.x - camera_pos.x,
+                y: pos_m.y - camera_pos.x
+            };
+            const pos_pixels = {
+                x: pos_m_relative_to_camera.x * camera_zoom_pixels_m,
+                y: pos_m_relative_to_camera.y * camera_zoom_pixels_m
+            }
+            const pos_canvas = {
+                x: pos_pixels.x + canvas.width / 2,
+                y: -pos_pixels.y + canvas.height / 2
+            }
+            return pos_canvas;
+        }
+
+        // const game_to_px = 500 / 100; // 500px = 100 game units
+
+        let state = {
+            time_s: 0,
+            entities: [],
+        };
+
+        function gameLoop(timestamp) {
+            const start = new Date().getTime();
+            draw()
+            benchmark(benchmarks.draw, start, new Date().getTime());
+
+            window.requestAnimationFrame(gameLoop);
+        }
+
+        function draw() {
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            for (let entity of state.entities) {
+                draw_entity(entity);
+            }
+        }
+
+        function draw_entity(entity) {
+            const { mass_kg, position_m, velocity_ms } = entity;
+            let radius_pixels = Math.pow(mass_kg, 1 / 3) / 1e3 * camera_zoom_pixels_m;
+            if (radius_pixels < 1) {
+                radius_pixels = 1;
+            }
+            context.beginPath();
+            const pos_canvas = transform_game_to_canvas(position_m);
+            context.arc(
+                pos_canvas.x,
+                pos_canvas.y,
+                radius_pixels,
+                0,
+                2 * Math.PI
+            );
+            context.fill();
+        }
+
+        async function stateLoop() {
+            const target_fps_ms = 500;
+            let last_fps_log = new Date().getTime();
+            let last_fps_n = 0;
+
+            const target_fetch_hz = 20;
+            const target_fetch_ms = 1000 / target_fetch_hz;
+            let fetch_start = new Date().getTime();
+
+            // noinspection InfiniteLoopJS
+            for (let n = 0; ; n++) {
+                // get state update
+                const res = await fetch('/gravity/step_naive', { method: 'POST' });
+                state = await res.json();
+
+                // calculate constant-rate sleep
+                const fetch_end = new Date().getTime();
+                const fetch_dur = fetch_end - fetch_start;
+
+                // log fps
+                if (fetch_end - last_fps_log > target_fps_ms) {
+                    const fps = 1000 * (n - last_fps_n) / (fetch_end - last_fps_log);
+                    document.getElementById("rps_counter").textContent = `${fps.toFixed(1)} rps`;
+                    // console.log(`${fps} rps`);
+                    last_fps_log = last_fps_log + target_fps_ms;
+                    last_fps_n = n;
+                }
+
+                // perform constant-rate sleep
+                if (fetch_dur < target_fetch_ms) {
+                    await new Promise(r => setTimeout(r, target_fetch_ms - fetch_dur));
+                }
+                fetch_start = fetch_start + target_fetch_ms;
+            }
+        }
+
+        async function initGravitySim() {
+            const res = await fetch('/gravity', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    step_s: 150.0,
+                    time_s: 0.0,
+                    entities: [
+                        {
+                            mass_kg: 1e11,
+                            position_m: { x: 0.0, y: 0.0 },
+                            velocity_ms: { x: 0.0, y: 0.0 },
+                        },
+                        {
+                            mass_kg: 1e6,
+                            position_m: { x: 0.0, y: 80.0 },
+                            velocity_ms: { x: -0.2, y: 0.0 },
+                        },
+                        {
+                            mass_kg: 1e6,
+                            position_m: { x: 0.0, y: -100.0 },
+                            velocity_ms: { x: 0.2, y: 0.0 },
+                        },
+                    ]
+                })
             });
-            const total_freq = running_cumul_freq;
-            const percentiles = Object.fromEntries(Object.entries(cumul_frequencies).map(([key, value]) => [key, value / total_freq]));
-
-            let p50 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.5)[0];
-            let p90 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.9)[0];
-            let p95 = Object.entries(percentiles).sort(([keya, valuea], [keyb, valueb]) => Number(keya) - Number(keyb)).find(([key, value]) => value >= 0.95)[0];
-
-            // report
-            console.log(`p50: ${p50}, p90: ${p90}, p95: ${p95}`);
-            // console.log(bench.frequencies, cumul_frequencies, percentiles);
-
-            // reset
-            Object.keys(bench.frequencies).forEach(k => bench.frequencies[k] = 0);
-            bench.last_eval = now_millis;
-        }
-    }
-
-    function gameLoop(timestamp) {
-        const start = new Date().getTime();
-        draw()
-        benchmark(benchmarks.draw, start, new Date().getTime());
-
-        window.requestAnimationFrame(gameLoop);
-    }
-
-    function draw() {
-        context.clearRect(0, 0, 500, 500);
-        for (let entity of state.entities) {
-            draw_entity(entity);
-        }
-    }
-
-    function draw_entity(entity) {
-        const {mass_kg, position_m, velocity_ms} = entity;
-        let radius_m = Math.pow(mass_kg, 1/3) / 1e4 * game_to_px;
-        if (radius_m < 0.5) {
-            radius_m = 0.5;
-        }
-        context.beginPath();
-        context.arc(position_m.x * game_to_px, position_m.y * game_to_px, radius_m * game_to_px, 0, 2 * Math.PI);
-        context.fill();
-
-        // debug velocity indicators
-        // context.beginPath();
-        // context.moveTo(position_m.x * game_to_px, position_m.y * game_to_px);
-        // context.lineTo(
-        //     position_m.x * game_to_px + 1e2 * velocity_ms.x * game_to_px,
-        //     position_m.y * game_to_px + 1e2 * velocity_ms.y * game_to_px);
-        // context.stroke();
-    }
-
-    async function stateLoop() {
-        const target_fps_ms = 500;
-        let last_fps_log = new Date().getTime();
-        let last_fps_n = 0;
-
-        const target_fetch_hz = 20;
-        const target_fetch_ms = 1000 / target_fetch_hz;
-        let fetch_start = new Date().getTime();
-
-        // noinspection InfiniteLoopJS
-        for (let n = 0; ; n++) {
-            // get state update
-            const res = await fetch('/gravity/step_naive', {method: 'POST'});
-            state = await res.json();
-
-            // calculate constant-rate sleep
-            const fetch_end = new Date().getTime();
-            const fetch_dur = fetch_end - fetch_start;
-
-            // log fps
-            if (fetch_end - last_fps_log > target_fps_ms) {
-                const fps = 1000 * (n - last_fps_n) / (fetch_end - last_fps_log);
-                document.getElementById("rps_counter").textContent = `${fps.toFixed(1)} rps`;
-                // console.log(`${fps} rps`);
-                last_fps_log = last_fps_log + target_fps_ms;
-                last_fps_n = n;
+            if (!res.ok) {
+                throw new Error("gravity setup not ok");
             }
-
-            // perform constant-rate sleep
-            if (fetch_dur < target_fetch_ms) {
-                await new Promise(r => setTimeout(r, target_fetch_ms - fetch_dur));
-            }
-            fetch_start = fetch_start + target_fetch_ms;
         }
-    }
 
-    async function initGravitySim() {
-        const res = await fetch('/gravity', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                step_s: 10.0,
-                time_s: 0.0,
-                entities: [
-                    {
-                        mass_kg: 3e10,
-                        position_m: {x: 50.0, y: 20.0},
-                        velocity_ms: {x: 0.05, y: 0.0},
-                    },
-                    {
-                        mass_kg: 1e10,
-                        position_m: {x: 50.0, y: 80.0},
-                        velocity_ms: {x: -0.1, y: 0.0},
-                    },
-                    {
-                        mass_kg: 1e6,
-                        position_m: {x: 0.0, y: 30.0},
-                        velocity_ms: {x: 0.0, y: -0.1},
-                    },
-                ]
-            })
-        });
-        if (!res.ok) {
-            throw new Error("gravity setup not ok");
+        window.onload = async () => {
+            await initGravitySim();
+            // noinspection ES6MissingAwait
+            stateLoop();
+            window.requestAnimationFrame(gameLoop);
         }
-    }
-
-    window.onload = async () => {
-        await initGravitySim();
-        // noinspection ES6MissingAwait
-        stateLoop();
-        window.requestAnimationFrame(gameLoop);
-    }
-</script>
+    </script>
 </body>
+
 </html>
